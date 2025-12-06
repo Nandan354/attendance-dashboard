@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Live Attendance Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 16px; background:#f7f8fb; color:#111; }
+    h1 { margin: 0 0 8px 0; }
+    .top { display:flex; gap:20px; align-items:center; margin-bottom:12px; }
+    .card { background:white; padding:12px 16px; border-radius:8px; box-shadow:0 1px 6px rgba(0,0,0,0.06); }
+    #stats { display:flex; gap:12px; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th,td { padding:8px 10px; text-align:left; border-bottom:1px solid #eee; font-size:14px; }
+    th { background:#fafafa; }
+    #chart { max-width:600px; height:260px; }
+    .small { font-size:12px; color:#666; }
+    #lastUpdated { font-size:13px; color:#444; margin-left:auto; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h1>Live Attendance Dashboard</h1>
+  <div class="top">
+    <div class="card" id="stats">
+      <div><strong id="total">Total: 0</strong><div class="small">Total records</div></div>
+      <div style="margin-left:16px;"><strong id="present">Present: 0</strong><div class="small">IN count</div></div>
+      <div style="margin-left:16px;"><strong id="absent">Denied: 0</strong><div class="small">DENIED count</div></div>
+    </div>
+
+    <div id="lastUpdated" class="card">Last: --</div>
+  </div>
+
+  <div class="card">
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <strong>Recent Entries</strong>
+    <table id="logTable">
+      <thead><tr><th>#</th><th>UID</th><th>Name</th><th>Date</th><th>Time</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script>
+/* ---------- CONFIG ---------- */
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbziIl1stJxeoYnVOFg4bUVA5dFd_RJkV505Zx5zpIJOygttaMwNHN5AqxUPdobz68dEYg/exec"; // e.g. https://script.google.com/macros/s/XXXX/exec
+const REFRESH_MS = 5000; // refresh interval
+
+/* ---------- JSONP helper ---------- */
+function fetchJsonp(url, callbackName, onSuccess, onError) {
+  const cb = callbackName || ('cb' + Date.now());
+  const script = document.createElement('script');
+  const full = url + (url.indexOf('?') === -1 ? '?' : '&') + 'callback=' + cb;
+  window[cb] = function(data) {
+    try { onSuccess(data); } finally { delete window[cb]; script.remove(); }
+  };
+  script.src = full;
+  script.onerror = function(e) { delete window[cb]; script.remove(); if(onError) onError(e); };
+  document.head.appendChild(script);
+}
+
+/* ---------- UI elements ---------- */
+const totalEl = document.getElementById('total');
+const presentEl = document.getElementById('present');
+const deniedEl = document.getElementById('absent');
+const lastUpdatedEl = document.getElementById('lastUpdated');
+const tbody = document.querySelector('#logTable tbody');
+
+let chart; // Chart.js instance
+
+function renderChart(rows) {
+  // Count by Name (top 8)
+  const counts = {};
+  rows.forEach(r => {
+    const name = r.Name || r.name || r[1] || 'Unknown';
+    const status = (r.Status || r.status || r[4] || '').toString().toUpperCase();
+    if (status === 'DENIED' || status === 'UNKNOWN') return;
+    counts[name] = (counts[name] || 0) + 1;
+  });
+  const entries = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const labels = entries.map(e=>e[0]);
+  const data = entries.map(e=>e[1]);
+
+  if (!chart) {
+    const ctx = document.getElementById('chart').getContext('2d');
+    chart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels: labels, datasets: [{ label:'Scans', data: data, backgroundColor:'rgba(54,162,235,0.6)' }] },
+      options: { responsive:true, plugins:{legend:{display:false}} }
+    });
+  } else {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data;
+    chart.update();
+  }
+}
+
+function renderTable(rows) {
+  tbody.innerHTML = '';
+  // show latest 30 rows, reverse order
+  const slice = rows.slice(-30).reverse();
+  slice.forEach((r, idx) => {
+    const tr = document.createElement('tr');
+    const uid = r.UID || r.uid || r['UID'] || r[Object.keys(r)[0]] || '';
+    const name = r.Name || r.name || r['Name'] || r[Object.keys(r)[1]] || '';
+    const date = r.Date || r.date || r['Date'] || r[Object.keys(r)[2]] || '';
+    const time = r.Time || r.time || r['Time'] || r[Object.keys(r)[3]] || '';
+    const status = r.Status || r.status || r['Status'] || r[Object.keys(r)[4]] || '';
+    tr.innerHTML = `<td>${idx+1}</td><td>${uid}</td><td>${name}</td><td>${date}</td><td>${time}</td><td>${status}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function updateStats(rows) {
+  const total = rows.length;
+  let present = 0, denied = 0;
+  rows.forEach(r => {
+    const st = (r.Status || r.status || r['Status'] || '').toString().toUpperCase();
+    if (st === 'IN' || st === 'PRESENT') present++;
+    if (st === 'DENIED' || st === 'UNKNOWN') denied++;
+  });
+  totalEl.textContent = 'Total: ' + total;
+  presentEl.textContent = 'Present: ' + present;
+  deniedEl.textContent = 'Denied: ' + denied;
+}
+
+/* ---------- Main fetch + render ---------- */
+function refresh() {
+  const url = APPS_SCRIPT_URL;
+  fetchJsonp(url, null, function(data) {
+    const rows = data.rows || [];
+    updateStats(rows);
+    renderTable(rows);
+    renderChart(rows);
+    lastUpdatedEl.textContent = 'Last: ' + (new Date()).toLocaleTimeString();
+  }, function() {
+    lastUpdatedEl.textContent = 'Last: error';
+  });
+}
+
+/* start */
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
